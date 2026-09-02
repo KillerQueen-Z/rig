@@ -307,6 +307,7 @@ macro_rules! companion_modules {
 
 companion_modules! {
     bedrock = rig_bedrock ["bedrock"];
+    blockrun = rig_blockrun ["blockrun"];
     /// Local CPU inference with validated Llama/SmolLM2 and native tool-capable Qwen3 models.
     candle = rig_candle ["candle"];
     fastembed = rig_fastembed [

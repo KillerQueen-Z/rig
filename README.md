@@ -159,6 +159,7 @@ rig = { version = "0.36.0", features = ["lancedb", "fastembed"] }
 | --- | --- | --- | --- |
 | AWS Bedrock | [`rig-bedrock`](https://github.com/0xPlaygrounds/rig/tree/main/crates/rig-bedrock) | `bedrock` | `rig::bedrock` |
 | AWS S3Vectors | [`rig-s3vectors`](https://github.com/0xPlaygrounds/rig/tree/main/crates/rig-s3vectors) | `s3vectors` | `rig::s3vectors` |
+| BlockRun (x402 pay-per-request) | [`rig-blockrun`](https://github.com/0xPlaygrounds/rig/tree/main/crates/rig-blockrun) | `blockrun` | `rig::blockrun` |
 | Candle (local Llama/SmolLM2/Qwen3 tools) | [`rig-candle`](https://github.com/0xPlaygrounds/rig/tree/main/crates/rig-candle) | `candle` | `rig::candle` |
 | Cloudflare Vectorize | [`rig-vectorize`](https://github.com/0xPlaygrounds/rig/tree/main/crates/rig-vectorize) | `vectorize` | `rig::vectorize` |
 | FastEmbed | [`rig-fastembed`](https://github.com/0xPlaygrounds/rig/tree/main/crates/rig-fastembed) | `fastembed` | `rig::fastembed` |
