@@ -1310,7 +1310,10 @@ impl completion::CompletionModel for CompletionModel {
         let body = serde_json::to_vec(&request)?;
         let url = format!("{}/v1/chat/completions", BLOCKRUN_API_BASE_URL);
 
-        // First request - will return 402 with payment requirements
+        // First request. Paid models answer 402 with the payment requirements;
+        // free models have no 402 to issue and stream straight back, so the
+        // response we already hold *is* the stream. Demanding a 402 here made
+        // every free model fail to stream at all.
         let initial_response = self
             .client
             .http_client
@@ -1319,12 +1322,11 @@ impl completion::CompletionModel for CompletionModel {
             .body(body.clone())
             .send()
             .await
-            .map_err(|e| CompletionError::ProviderError(format!("Request failed: {}", e)))?;
+            .map_err(|e| CompletionError::ProviderError(format!("Request failed: {e}")))?;
 
         let status = initial_response.status();
 
-        // Handle 402 Payment Required
-        let payment_payload = if status == StatusCode::PAYMENT_REQUIRED {
+        let response = if status == StatusCode::PAYMENT_REQUIRED {
             let payment_header = initial_response
                 .headers()
                 .get("x-payment-required")
@@ -1339,45 +1341,50 @@ impl completion::CompletionModel for CompletionModel {
                 .to_string();
 
             let payment_required_json = BASE64.decode(&payment_header).map_err(|e| {
-                CompletionError::ProviderError(format!("Failed to decode payment header: {}", e))
+                CompletionError::ProviderError(format!("Failed to decode payment header: {e}"))
             })?;
 
             let payment_required: PaymentRequired = serde_json::from_slice(&payment_required_json)
                 .map_err(|e| {
                     CompletionError::ProviderError(format!(
-                        "Failed to parse payment requirements: {}",
-                        e
+                        "Failed to parse payment requirements: {e}"
                     ))
                 })?;
 
-            self.client.signer()?.create_payment(&payment_required)?
+            let payment_payload = self.client.signer()?.create_payment(&payment_required)?;
+
+            let paid_response = self
+                .client
+                .http_client
+                .post(&url)
+                .header("Content-Type", "application/json")
+                .header("payment", &payment_payload)
+                .header("x-payment", &payment_payload)
+                .body(body)
+                .send()
+                .await
+                .map_err(|e| CompletionError::ProviderError(format!("Paid request failed: {e}")))?;
+
+            if !paid_response.status().is_success() {
+                let body = paid_response.bytes().await.map_err(|e| {
+                    CompletionError::ProviderError(format!("Failed to read error response: {e}"))
+                })?;
+                return Err(CompletionError::ProviderError(
+                    String::from_utf8_lossy(&body).to_string(),
+                ));
+            }
+
+            paid_response
+        } else if status.is_success() {
+            initial_response
         } else {
-            return Err(CompletionError::ProviderError(
-                "Expected 402 response for payment".to_string(),
-            ));
-        };
-
-        // Make the paid streaming request
-        let response = self
-            .client
-            .http_client
-            .post(&url)
-            .header("Content-Type", "application/json")
-            .header("payment", &payment_payload)
-            .header("x-payment", &payment_payload)
-            .body(body)
-            .send()
-            .await
-            .map_err(|e| CompletionError::ProviderError(format!("Paid request failed: {}", e)))?;
-
-        if !response.status().is_success() {
-            let body = response.bytes().await.map_err(|e| {
-                CompletionError::ProviderError(format!("Failed to read error response: {}", e))
+            let body = initial_response.bytes().await.map_err(|e| {
+                CompletionError::ProviderError(format!("Failed to read error response: {e}"))
             })?;
             return Err(CompletionError::ProviderError(
                 String::from_utf8_lossy(&body).to_string(),
             ));
-        }
+        };
 
         let span = if tracing::Span::current().is_disabled() {
             info_span!(
