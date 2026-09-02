@@ -9,8 +9,21 @@ description = "BlockRun x402 micropayment provider for Rig integration."
 [lints]
 workspace = true
 
+[features]
+# TLS, on the same axis as `rig-reqwest`: the workspace pins reqwest with
+# `default-features = false`, so without one of these there is no TLS stack in
+# the tree at all and every request to the gateway fails at the transport. The
+# stacks are additive rather than exclusive, matching `rig-reqwest`'s own
+# documentation of the pair.
+default = ["rustls"]
+rustls = ["rig-reqwest/rustls"]
+native-tls = ["rig-reqwest/native-tls"]
+
 [dependencies]
 rig-core = { path = "../rig-core", version = "0.42.0", default-features = false }
+# Depended on for the TLS feature forwarding above; this crate drives reqwest
+# directly because x402 is a probe-then-sign flow rather than a plain request.
+rig-reqwest = { path = "../rig-reqwest", version = "0.42.0", default-features = false }
 async-stream = { workspace = true }
 base64 = { workspace = true }
 futures = { workspace = true }
@@ -27,6 +40,7 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 anyhow = { workspace = true }
+futures = { workspace = true }
 rig-agent = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
