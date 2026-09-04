@@ -1,21 +1,22 @@
 //! Example of using the BlockRun provider with Rig.
 //!
-//! BlockRun provides pay-per-request access to ~100 chat models via x402
-//! micropayments. No API keys — just a wallet funded with USDC on Base. Part of
-//! the catalogue is free and needs no wallet at all.
+//! BlockRun provides pay-per-request access to ~100 chat models through the account
+//! API or x402. Part of the catalogue is free and needs no credential.
 //!
 //! # Setup
 //!
-//! 1. Generate a wallet private key or use an existing one
-//! 2. Fund it with USDC on Base (even $1 goes a long way at ~$0.002/request)
-//! 3. Set `BLOCKRUN_WALLET_KEY`
+//! 1. Register at https://user.blockrun.ai and add credits
+//! 2. Create a key at https://user.blockrun.ai/dashboard/keys
+//! 3. Set `BLOCKRUN_API_KEY`
+//!
+//! Wallet fallback is also available; use Solana before Base.
 //!
 //! The free-tier section below runs without any of that.
 //!
 //! # Running
 //!
 //! ```bash
-//! BLOCKRUN_WALLET_KEY=0x... cargo run -p rig-blockrun --example agent_with_blockrun
+//! BLOCKRUN_API_KEY=brk_... cargo run -p rig-blockrun --example agent_with_blockrun
 //! ```
 
 use rig_agent::prelude::*;
@@ -45,14 +46,10 @@ async fn main() -> Result<(), anyhow::Error> {
         .output;
     println!("Free model: {answer}\n");
 
-    // ---- Paid models: sign with a funded wallet ----
+    // ---- Paid models: account API first, wallet fallback ----
     let client = Client::from_env()?;
 
-    // Handy when you need to top the wallet up.
-    if let Some(address) = client.address() {
-        println!("Wallet address: {address}");
-        println!("Fund it with USDC on Base to use the paid models\n");
-    }
+    println!("Billing mode: {}", client.auth_mode());
 
     println!("=== Claude Opus 5 ===");
     let claude_agent = client

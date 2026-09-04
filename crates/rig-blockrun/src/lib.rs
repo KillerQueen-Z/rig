@@ -11,15 +11,14 @@
 //! BlockRun API client and Rig integration
 //!
 //! [BlockRun](https://blockrun.ai) provides pay-per-request access to ~100 chat
-//! models via x402 micropayments. Callers pay in USDC on Base — no API keys, no
-//! accounts, no subscription. A subset of the catalogue is free and needs no
-//! wallet at all.
+//! models through the BlockRun account API or x402 micropayments. A subset of
+//! the catalogue is free and needs no billing credential.
 //!
 //! # Example
 //! ```ignore
 //! use rig_blockrun::{Client, CLAUDE_OPUS_5, GPT_56_TERRA, FREE_QWEN35_397B};
 //!
-//! // Paid models: sign with a funded wallet (reads BLOCKRUN_WALLET_KEY).
+//! // Paid models: BLOCKRUN_API_KEY is preferred; a wallet remains supported.
 //! let client = Client::from_env()?;
 //! let claude = client.completion_model(CLAUDE_OPUS_5);
 //! let gpt = client.completion_model(GPT_56_TERRA);
@@ -86,7 +85,8 @@ use tracing::{Instrument, Level, enabled, info_span};
 // ================================================================
 // Constants
 // ================================================================
-const BLOCKRUN_API_BASE_URL: &str = "https://blockrun.ai/api";
+const BLOCKRUN_WALLET_API_BASE_URL: &str = "https://blockrun.ai/api";
+const BLOCKRUN_ACCOUNT_API_BASE_URL: &str = "https://api.blockrun.ai";
 
 // Base Mainnet
 const BASE_CHAIN_ID: u64 = 8453;
@@ -554,6 +554,8 @@ pub struct Client {
     /// flow, so they need no key; a paid model on such a client fails at the
     /// 402 with [`CompletionError::ProviderError`] rather than panicking.
     auth: Option<BlockRunAuth>,
+    /// Account credential. Private and never included in Debug or errors.
+    api_key: Option<String>,
     http_client: reqwest::Client,
     #[allow(dead_code)] // Reserved for custom endpoint support
     base_url: String,
@@ -575,20 +577,49 @@ impl Client {
 
         Ok(Self {
             auth: Some(auth),
+            api_key: None,
             http_client: build_http_client()?,
-            base_url: BLOCKRUN_API_BASE_URL.to_string(),
+            base_url: BLOCKRUN_WALLET_API_BASE_URL.to_string(),
         })
     }
 
-    /// Create a client from the `BLOCKRUN_WALLET_KEY` environment variable.
+    /// Create a client billed to a BlockRun account.
+    pub fn from_api_key(api_key: &str) -> Result<Self, CompletionError> {
+        let key = api_key.trim();
+        if !key.starts_with("brk_")
+            || key.len() <= 4
+            || !key[4..]
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        {
+            return Err(CompletionError::ProviderError(
+                "Invalid BlockRun API key. Create one at https://user.blockrun.ai/dashboard/keys."
+                    .to_string(),
+            ));
+        }
+        let base_url = std::env::var("BLOCKRUN_API_BASE_URL")
+            .unwrap_or_else(|_| BLOCKRUN_ACCOUNT_API_BASE_URL.to_string());
+        Ok(Self {
+            auth: None,
+            api_key: Some(key.to_string()),
+            http_client: build_http_client()?,
+            base_url: base_url.trim_end_matches('/').to_string(),
+        })
+    }
+
+    /// Create a client from `BLOCKRUN_API_KEY`, falling back to `BLOCKRUN_WALLET_KEY`.
     ///
     /// Returns an error rather than panicking when the variable is missing or
     /// holds a key that does not parse — a missing environment variable is an
     /// ordinary misconfiguration, not a bug in the caller.
     pub fn from_env() -> Result<Self, CompletionError> {
+        if let Ok(api_key) = std::env::var("BLOCKRUN_API_KEY") {
+            return Self::from_api_key(&api_key);
+        }
         let private_key = std::env::var("BLOCKRUN_WALLET_KEY").map_err(|_| {
             CompletionError::ProviderError(
-                "BLOCKRUN_WALLET_KEY is not set. Set it to a hex private key, or use \
+                "No BlockRun billing credential is set. Set BLOCKRUN_API_KEY, set \
+                 BLOCKRUN_WALLET_KEY to a hex private key, or use \
                  `Client::free()` for the free models."
                     .to_string(),
             )
@@ -611,8 +642,9 @@ impl Client {
     pub fn free() -> Result<Self, CompletionError> {
         Ok(Self {
             auth: None,
+            api_key: None,
             http_client: build_http_client()?,
-            base_url: BLOCKRUN_API_BASE_URL.to_string(),
+            base_url: BLOCKRUN_WALLET_API_BASE_URL.to_string(),
         })
     }
 
@@ -620,6 +652,17 @@ impl Client {
     /// free-tier client built by [`Client::free`].
     pub fn address(&self) -> Option<&str> {
         self.auth.as_ref().map(|auth| auth.address())
+    }
+
+    /// Active billing mode.
+    pub fn auth_mode(&self) -> &'static str {
+        if self.api_key.is_some() {
+            "api-key"
+        } else if self.auth.is_some() {
+            "wallet"
+        } else {
+            "free"
+        }
     }
 
     /// The signer, or the error a paid request should fail with when the client
@@ -635,12 +678,16 @@ impl Client {
         })
     }
 
-    #[allow(dead_code)] // Reserved for future API extensions
     fn post(&self, path: &str) -> reqwest::RequestBuilder {
         let url = format!("{}/{}", self.base_url, path.trim_start_matches('/'));
-        self.http_client
+        let request = self
+            .http_client
             .post(url)
-            .header("Content-Type", "application/json")
+            .header("Content-Type", "application/json");
+        match &self.api_key {
+            Some(key) => request.bearer_auth(key),
+            None => request,
+        }
     }
 }
 
@@ -1172,22 +1219,25 @@ impl completion::CompletionModel for CompletionModel {
         }
 
         let body = serde_json::to_vec(&request)?;
-        let url = format!("{}/v1/chat/completions", BLOCKRUN_API_BASE_URL);
-
         let client = self.client.clone();
 
         async move {
             // First request - will return 402 with payment requirements
             let initial_response = client
-                .http_client
-                .post(&url)
-                .header("Content-Type", "application/json")
+                .post("/v1/chat/completions")
                 .body(body.clone())
                 .send()
                 .await
                 .map_err(|e| CompletionError::ProviderError(format!("Request failed: {}", e)))?;
 
             let status = initial_response.status();
+
+            if status == StatusCode::PAYMENT_REQUIRED && client.api_key.is_some() {
+                return Err(CompletionError::ProviderError(
+                    "BlockRun account needs credits. Top up at https://user.blockrun.ai/dashboard/credits."
+                        .to_string(),
+                ));
+            }
 
             // Handle 402 Payment Required
             if status == StatusCode::PAYMENT_REQUIRED {
@@ -1224,8 +1274,7 @@ impl completion::CompletionModel for CompletionModel {
                 let payment_payload = client.signer()?.create_payment(&payment_required)?;
 
                 let paid_response = client
-                    .http_client
-                    .post(&url)
+                    .post("/v1/chat/completions")
                     .header("Content-Type", "application/json")
                     .header("payment", &payment_payload)
                     .header("x-payment", &payment_payload)
@@ -1308,23 +1357,26 @@ impl completion::CompletionModel for CompletionModel {
         }
 
         let body = serde_json::to_vec(&request)?;
-        let url = format!("{}/v1/chat/completions", BLOCKRUN_API_BASE_URL);
-
         // First request. Paid models answer 402 with the payment requirements;
         // free models have no 402 to issue and stream straight back, so the
         // response we already hold *is* the stream. Demanding a 402 here made
         // every free model fail to stream at all.
         let initial_response = self
             .client
-            .http_client
-            .post(&url)
-            .header("Content-Type", "application/json")
+            .post("/v1/chat/completions")
             .body(body.clone())
             .send()
             .await
             .map_err(|e| CompletionError::ProviderError(format!("Request failed: {e}")))?;
 
         let status = initial_response.status();
+
+        if status == StatusCode::PAYMENT_REQUIRED && self.client.api_key.is_some() {
+            return Err(CompletionError::ProviderError(
+                "BlockRun account needs credits. Top up at https://user.blockrun.ai/dashboard/credits."
+                    .to_string(),
+            ));
+        }
 
         let response = if status == StatusCode::PAYMENT_REQUIRED {
             let payment_header = initial_response
@@ -1355,8 +1407,7 @@ impl completion::CompletionModel for CompletionModel {
 
             let paid_response = self
                 .client
-                .http_client
-                .post(&url)
+                .post("/v1/chat/completions")
                 .header("Content-Type", "application/json")
                 .header("payment", &payment_payload)
                 .header("x-payment", &payment_payload)
@@ -1937,5 +1988,27 @@ mod tests {
 
         let err = completion::CompletionResponse::try_from(wire).unwrap_err();
         assert!(err.to_string().contains("empty"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn account_client_uses_bearer_auth_without_a_wallet() {
+        let client = Client::from_api_key("brk_test_rig_account").unwrap();
+        assert_eq!(client.auth_mode(), "api-key");
+        assert_eq!(client.address(), None);
+        let request = client.post("/v1/chat/completions").build().unwrap();
+        assert_eq!(
+            request.headers().get("authorization").unwrap(),
+            "Bearer brk_test_rig_account"
+        );
+        assert_eq!(
+            request.url().as_str(),
+            "https://api.blockrun.ai/v1/chat/completions"
+        );
+    }
+
+    #[test]
+    fn account_client_rejects_invalid_keys() {
+        let err = Client::from_api_key("not-a-key").err().unwrap();
+        assert!(err.to_string().contains("dashboard/keys"));
     }
 }

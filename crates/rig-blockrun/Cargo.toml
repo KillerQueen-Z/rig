@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license = "MIT"
 readme = "README.md"
-description = "BlockRun x402 micropayment provider for Rig integration."
+description = "BlockRun account API and x402 provider for Rig integration."
 
 [lints]
 workspace = true

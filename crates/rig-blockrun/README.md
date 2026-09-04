@@ -1,11 +1,11 @@
 ## Rig-BlockRun
 
-This companion crate integrates [BlockRun](https://blockrun.ai) with Rig, providing pay-per-request access to ~100 chat models via x402 micropayments.
+This companion crate integrates [BlockRun](https://blockrun.ai) with Rig, providing pay-per-request access to ~100 chat models through the BlockRun account API or x402 micropayments.
 
 ### Features
 
-- **No API keys**: wallet signatures replace API keys; nothing to provision, no account to create
-- **x402 Protocol**: HTTP 402 Payment Required with EIP-712 signed USDC authorizations on Base
+- **Account API**: create a key at [user.blockrun.ai](https://user.blockrun.ai/dashboard/keys) and bill requests to account credits
+- **x402 Protocol**: alternatively use signed USDC authorizations on Solana or Base
 - **Free tier**: part of the catalogue costs nothing and needs no wallet at all
 - **Multi-model access**: Claude, GPT-5.6, Gemini, Grok, DeepSeek, Kimi, GLM, Qwen, MiniMax and more behind one provider
 - **Tool calling and streaming**: full compatibility with Rig's tool and agent system
@@ -24,13 +24,17 @@ You can also run `cargo add rig-blockrun rig-core` to add the most recent versio
 
 ### Setup
 
-Free models need no setup at all. For the paid catalogue:
+For paid models, create an account at [user.blockrun.ai](https://user.blockrun.ai),
+add [credits](https://user.blockrun.ai/dashboard/credits), create an
+[API key](https://user.blockrun.ai/dashboard/keys), and set:
 
-1. Generate a wallet private key or use an existing one
-2. Fund it with USDC on Base (even $1 goes a long way — requests start around $0.002)
-3. Set the `BLOCKRUN_WALLET_KEY` environment variable
+```bash
+export BLOCKRUN_API_KEY=brk_...
+```
 
-The private key is only ever used for local signing; it never leaves your machine.
+`Client::from_env()` uses the account key first. The existing x402 wallet flow remains
+available through `BLOCKRUN_WALLET_KEY`; BlockRun recommends Solana before Base for
+wallet payments. Credentials stay local and are never printed by the client.
 
 ### Example
 
@@ -48,12 +52,9 @@ async fn main() -> Result<(), anyhow::Error> {
 
     println!("{}", free_agent.prompt("What is x402?").await?.output);
 
-    // Paid models: one wallet, every provider.
+    // Paid models: account API key first, wallet fallback.
     let client = Client::from_env()?;
-
-    if let Some(address) = client.address() {
-        println!("Wallet: {address}");
-    }
+    println!("Billing: {}", client.auth_mode());
 
     let agent = client
         .agent(CLAUDE_OPUS_5)
